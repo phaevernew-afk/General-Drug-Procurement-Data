@@ -121,6 +121,14 @@
       </div>
       <div id="resmsg"></div>
     </div>
+    <div class="card hide" id="pendingCard">
+      <h2>④ 補進對照檔（新藥）</h2>
+      <p class="sub" style="margin-bottom:10px">這些藥在藥品檔有代碼，但對照檔還沒有它的藥商。「藥廠名稱」已先帶入本季驗收廠商當建議，<b>請逐筆確認</b>（進貨廠商不一定是藥商）。清空該格代表這筆先不加。</p>
+      <div class="tablebox" id="pendingTable"></div>
+      <datalist id="vendorList"></datalist>
+      <div class="bar"><button class="primary" id="btnApply">加入對照檔、下載更新後的 XLSX，並重新產生</button></div>
+      <div id="applymsg"></div>
+    </div>
     <div class="card">
       <div class="tabs">
         <button class="on" data-tab="prev">輸出預覽</button>
@@ -137,7 +145,7 @@
       <ol>
         <li>以「驗收總表」本季有進貨的品項（名稱及規格）為基準，依序處理。</li>
         <li>藥品代碼取自「藥品檔基本資料」；院內自訂碼（A0000000xx）不列入。同名稱有多個不同代碼的品項視為有疑問，不輸出。</li>
-        <li>藥商：先依對照檔「藥品基本資料」分頁的藥廠名稱，到「藥商資料」分頁取得統編、全名、地址。沒有代碼或找不到藥商的品項不輸出，只列在警告清單。</li>
+        <li>藥商：先依對照檔「藥品基本資料」分頁的藥廠名稱，到「藥商資料」分頁取得統編、全名、地址。沒有代碼或找不到藥商的品項不輸出，只列在警告清單；其中「對照檔缺藥商」的新藥可在頁面下方補進對照檔並下載更新後的檔案。</li>
         <li>同一藥品代碼只留第一筆。統編補零至 8 碼；藥商名稱、地址分別在左側補空白至 200、1200 bytes（內容靠右，Big5 計算，中文字 2 bytes）；換行為 CRLF。</li>
       </ol>
     </details>
@@ -167,7 +175,7 @@ function locate(wb, required, optional){
           const o = {}; for(const h in idx) o[h] = S(arr[i][idx[h]]);
           rows.push(o);
         }
-        return {rows, sheet:sn};
+        return {rows, sheet:sn, headRow:r, idx};
       }
     }
   }
@@ -268,7 +276,7 @@ function buildReport(inputs, opts){
     if(!groups.has(key)) groups.set(key,{item:r['名稱及規格'], brand:r['廠牌']||'', accMfr:r['廠商'].replace(/^[A-Za-z0-9]+-/,'')});
   }
 
-  const seenCode = new Set(); const rows = [];
+  const seenCode = new Set(); const rows = []; const pending = [];
   const stats = {accItems:new Set(accRows.map(r=>r['名稱及規格'])).size, accRows:accRows.length};
   const warnedNames = new Set();
 
@@ -295,7 +303,8 @@ function buildReport(inputs, opts){
       else if(bsRow.tax){ tax=bsRow.tax.padStart(8,'0'); const v2=vdByTax.get(tax); vname=(v2&&v2.name)||bsRow.name; vaddr=(v2&&v2.addr)||bsRow.addr; source='map'; }
     }
     if(source!=='map'){
-      issues.push({item:g.item, code, level:'err', reason:'對照檔找不到此藥的藥商，未輸出（請到「藥品基本資料」分頁補上藥廠名稱）'}); continue;
+      issues.push({item:g.item, code, level:'err', kind:'novendor', reason:'對照檔沒有此藥的藥商，未輸出（可在下方補進對照檔）'});
+      pending.push({item:g.item, code, suggest: vdByMfr.has(g.accMfr)? g.accMfr : '', accMfr:g.accMfr}); continue;
     }
     if(!tax || !vname || !vaddr){
       issues.push({item:g.item, code, level:'err', reason:'藥商資料不完整（統編／名稱／地址有空白），未輸出'}); continue;
@@ -321,16 +330,43 @@ function buildReport(inputs, opts){
   const bytes = new Uint8Array(total); let o=0; chunks.forEach(c=>{bytes.set(c,o); o+=c.length;});
 
   const defaultName = minYM ? String(minYM.y)+String(minYM.mo).padStart(2,'0')+'.csv' : '申報.csv';
-  return {rows, issues, bytes, defaultName, stats:{...stats, groups:groups.size, out:rows.length}};
+  return {rows, issues, bytes, defaultName, pending, vendorKeys:[...vdByMfr.keys()], bsSheet,
+          stats:{...stats, groups:groups.size, out:rows.length}};
 }
 
-if(typeof module!=='undefined') module.exports = {buildReport, locate, big5Map};
+/* 把新藥補進對照檔「藥品基本資料」分頁：entries=[{item,code,mfr}]，回傳實際加入的筆數 */
+function applyPending(refWb, entries){
+  const bs = locate(refWb, ['藥品名稱','藥品代號','藥廠名稱'], ['藥商統編','藥商全名','廠商地址']);
+  const vd = locate(refWb, ['藥廠名稱','統一編號','廠商全名','廠商地址']);
+  const vmap = new Map(); vd.rows.forEach(r=>{ if(r['藥廠名稱'] && !vmap.has(r['藥廠名稱'])) vmap.set(r['藥廠名稱'],r); });
+  const ws = refWb.Sheets[bs.sheet];
+  const heads = XLSX.utils.sheet_to_json(ws,{header:1,raw:true,defval:''})[bs.headRow].map(S);
+  const col = h=>heads.indexOf(h);
+  const range = XLSX.utils.decode_range(ws['!ref']);
+  /* 找到最後一列有資料的位置，接在它後面 */
+  let last = bs.headRow;
+  const all = XLSX.utils.sheet_to_json(ws,{header:1,raw:true,defval:''});
+  all.forEach((r,i)=>{ if(r.some(v=>S(v)!=='')) last=i; });
+  let n=0;
+  for(const e of entries){
+    const v = vmap.get(e.mfr); if(!v) continue;
+    const row = new Array(Math.max(...heads.map((h,i)=>h?i:0))+1).fill('');
+    const set=(h,val)=>{ const i=col(h); if(i>=0) row[i]=val; };
+    set('藥品名稱',e.item); set('藥品代號',e.code); set('藥廠名稱',e.mfr);
+    set('藥商全名',S(v['廠商全名'])); set('廠商地址',S(v['廠商地址']));
+    set('藥商統編',S(v['統一編號']).padStart(8,'0'));
+    last++; XLSX.utils.sheet_add_aoa(ws,[row],{origin:{r:last,c:0}}); n++;
+  }
+  return n;
+}
+
+if(typeof module!=='undefined') module.exports = {buildReport, locate, big5Map, applyPending};
 
 /* ================= 介面 ================= */
 if(typeof document!=='undefined'){
 (function(){
   const $ = s=>document.querySelector(s);
-  const wbs = {drug:null, acc:null, ref:null};
+  const wbs = {drug:null, acc:null, ref:null}; const fnames = {};
   let last = null;
 
   document.querySelectorAll('.drop').forEach(box=>{
@@ -346,7 +382,7 @@ if(typeof document!=='undefined'){
   async function load(key, file, box){
     try{
       const buf = await file.arrayBuffer();
-      wbs[key] = XLSX.read(buf,{type:'array'});
+      wbs[key] = XLSX.read(buf,{type:'array'}); fnames[key] = file.name;
       box.classList.add('done'); box.querySelector('.f').textContent = '✓ '+file.name;
       showMsg($('#loadmsg'),'ok','');
     }catch(e){
@@ -361,7 +397,7 @@ if(typeof document!=='undefined'){
   function esc(s){ return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
   function stat(n,l){ return '<div class="stat"><b>'+n+'</b><span>'+l+'</span></div>'; }
 
-  $('#btnRun').addEventListener('click', ()=>{
+  function run(){
     const msg = $('#resmsg'); msg.innerHTML='';
     try{
       last = buildReport({drugWb:wbs.drug, accWb:wbs.acc, refWb:wbs.ref},
@@ -384,9 +420,42 @@ if(typeof document!=='undefined'){
     $('#tab-issue').innerHTML = last.issues.length ? '<table><thead><tr><th>等級</th><th>品名</th><th>代碼</th><th>原因</th></tr></thead><tbody>'+
       last.issues.map(i=>'<tr><td><span class="tag '+i.level+'">'+(i.level==='err'?'未輸出':'留意')+'</span></td><td>'+esc(i.item)+'</td><td class="mono">'+esc(i.code)+'</td><td>'+esc(i.reason)+'</td></tr>').join('')+'</tbody></table>'
       : '<p style="padding:12px">沒有任何警告。</p>';
-    if(errs) showMsg(msg,'err','有 '+errs+' 個品項因缺資料沒有輸出。多半是新藥：請到對照檔的「藥品基本資料」分頁補上該藥的藥廠名稱，存檔後重新匯入。');
+    if(errs){
+      const c = f=>last.issues.filter(i=>i.level==='err'&&f(i)).length;
+      const nc=c(i=>i.reason.includes('無藥品代碼')), mc=c(i=>i.reason.includes('多個不同代碼')), nv=c(i=>i.kind==='novendor');
+      showMsg(msg,'err','有 '+errs+' 個品項沒有輸出（詳見「排除／警告清單」）：藥品檔無代碼 '+nc+'、同名多代碼 '+mc+'、對照檔缺藥商 '+nv+(nv?'，缺藥商的可在下方「④」補進對照檔。':'。'));
+    }
     else showMsg(msg,'ok','全部品項都已處理。');
+    renderPending();
     $('#result').scrollIntoView({behavior:'smooth'});
+  }
+  $('#btnRun').addEventListener('click', run);
+
+  function renderPending(){
+    const card = $('#pendingCard'), p = last.pending;
+    $('#applymsg').innerHTML='';
+    if(!p.length){ card.classList.add('hide'); return; }
+    card.classList.remove('hide');
+    $('#vendorList').innerHTML = last.vendorKeys.map(k=>'<option value="'+esc(k)+'">').join('');
+    $('#pendingTable').innerHTML = '<table><thead><tr><th>品名</th><th>藥品代碼</th><th>驗收廠商</th><th>藥廠名稱（可修改）</th></tr></thead><tbody>'+
+      p.map((x,i)=>'<tr><td>'+esc(x.item)+'</td><td class="mono">'+esc(x.code)+'</td><td>'+esc(x.accMfr)+'</td><td><input type="text" list="vendorList" data-i="'+i+'" value="'+esc(x.suggest)+'" style="width:100%;min-width:180px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--text);font:inherit"></td></tr>').join('')+'</tbody></table>';
+  }
+
+  $('#btnApply').addEventListener('click', ()=>{
+    const am = $('#applymsg'); const p = last.pending; const keys = new Set(last.vendorKeys);
+    const entries = [], bad = [];
+    document.querySelectorAll('#pendingTable input').forEach(inp=>{
+      const v = inp.value.trim(); const x = p[+inp.dataset.i]; if(!v) return;
+      if(!keys.has(v)) bad.push(x.item+'（'+v+'）'); else entries.push({item:x.item, code:x.code, mfr:v});
+    });
+    if(bad.length){ showMsg(am,'err','這些藥廠名稱不在「藥商資料」分頁，請從下拉選單選擇：'+bad.join('、')); return; }
+    if(!entries.length){ showMsg(am,'err','沒有可加入的項目（藥廠名稱都是空白）。'); return; }
+    const n = applyPending(wbs.ref, entries);
+    const base = (fnames.ref||'對照檔').replace(/\.(xls|xlsx)$/i,'');
+    const out = XLSX.write(wbs.ref,{bookType:'xlsx',type:'array'});
+    download(new Blob([out],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}), base+'（已更新）.xlsx');
+    run();
+    showMsg($('#applymsg'),'ok','已加入 '+n+' 筆並下載更新後的對照檔；CSV 也已用更新後的對照檔重新產生。下次請改匯入這份新的對照檔。');
   });
 
   $('#optName').addEventListener('input', e=>{ e.target.dataset.touched='1'; });
