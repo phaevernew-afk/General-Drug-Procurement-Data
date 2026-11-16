@@ -102,12 +102,8 @@
   </div>
 
   <div class="card">
-    <h2>② 選項</h2>
+    <h2>② 輸出檔名</h2>
     <div class="opts">
-      <label><input type="checkbox" id="optGuess"> <span>包含「用驗收廠商推測藥商」的品項（預設不含，因為進貨廠商不一定等於藥商）</span></label>
-      <label><input type="checkbox" id="optPartial"> <span>包含資料不全的列（缺藥商時欄位留白）</span></label>
-      <div class="field"><span>排除的藥品代碼（正規表示式，院內自訂碼）</span>
-        <input type="text" id="optExclude" value="^A0000000\d{2}$"></div>
       <div class="field"><span>輸出檔名</span>
         <input type="text" id="optName" value="申報.csv"></div>
     </div>
@@ -140,9 +136,8 @@
       <summary>整理規則說明</summary>
       <ol>
         <li>以「驗收總表」本季有進貨的品項（名稱及規格）為基準，依序處理。</li>
-        <li>藥品代碼取自「藥品檔基本資料」；同名稱有多個代碼時，用驗收總表的「廠牌」挑選，再不行才用對照檔的代碼。</li>
-        <li>沒有代碼，或符合排除規則（預設為院內自訂碼 A0000000xx）的品項不列入。</li>
-        <li>藥商：先依對照檔「藥品基本資料」分頁的藥廠名稱，到「藥商資料」分頁取得統編、全名、地址；找不到時才以驗收總表的廠商推測（預設不輸出，只列在警告）。</li>
+        <li>藥品代碼取自「藥品檔基本資料」；院內自訂碼（A0000000xx）不列入。同名稱有多個不同代碼的品項視為有疑問，不輸出。</li>
+        <li>藥商：先依對照檔「藥品基本資料」分頁的藥廠名稱，到「藥商資料」分頁取得統編、全名、地址。沒有代碼或找不到藥商的品項不輸出，只列在警告清單。</li>
         <li>同一藥品代碼只留第一筆。統編補零至 8 碼；藥商名稱、地址分別在左側補空白至 200、1200 bytes（內容靠右，Big5 計算，中文字 2 bytes）；換行為 CRLF。</li>
       </ol>
     </details>
@@ -273,7 +268,6 @@ function buildReport(inputs, opts){
     if(!groups.has(key)) groups.set(key,{item:r['名稱及規格'], brand:r['廠牌']||'', accMfr:r['廠商'].replace(/^[A-Za-z0-9]+-/,'')});
   }
 
-  const exRe = opts.exclude ? new RegExp(opts.exclude) : null;
   const seenCode = new Set(); const rows = [];
   const stats = {accItems:new Set(accRows.map(r=>r['名稱及規格'])).size, accRows:accRows.length};
   const warnedNames = new Set();
@@ -283,16 +277,12 @@ function buildReport(inputs, opts){
     if(!cands.length){ issues.push({item:g.item, code:'', level:'err', reason:'藥品檔找不到此品項'}); continue; }
     const withCode = cands.filter(c=>c.code);
     if(!withCode.length){ issues.push({item:g.item, code:'', level:'err', reason:'藥品檔無藥品代碼'}); continue; }
-    /* 挑代碼 */
+    /* 院內自訂碼 A0000000xx 直接略過；同名稱有多個不同代碼視為有疑問，不輸出 */
+    const codes = [...new Set(withCode.map(c=>c.code))];
+    if(codes.length>1){ issues.push({item:g.item, code:codes.join(' / '), level:'err', reason:'同名稱有多個不同代碼，無法確定，未輸出'}); continue; }
     const bsRows = bsBy.get(g.item)||[];
-    let pick = null;
-    if(withCode.length>1){
-      if(g.brand) pick = withCode.find(c=>c.brand===g.brand);
-      if(!pick) pick = withCode.find(c=>bsRows.some(b=>b.code===c.code));
-      if(!pick){ pick = withCode[0]; issues.push({item:g.item, code:pick.code, level:'warn', reason:'同名稱有多個代碼，無法判斷，暫用第一個'}); }
-    } else pick = withCode[0];
-    const code = pick.code;
-    if(exRe && exRe.test(code)){ issues.push({item:g.item, code, level:'warn', reason:'符合排除規則（院內自訂碼），未列入'}); continue; }
+    const code = codes[0];
+    if(/^A0000000\d{2}$/.test(code)) continue;
     if(code.length!==10) issues.push({item:g.item, code, level:'warn', reason:'藥品代碼不是 10 碼（'+code.length+' 碼）'});
     if(seenCode.has(code)){ issues.push({item:g.item, code, level:'warn', reason:'藥品代碼重複，已略過後面這筆'}); continue; }
 
@@ -305,19 +295,11 @@ function buildReport(inputs, opts){
       else if(bsRow.tax){ tax=bsRow.tax.padStart(8,'0'); const v2=vdByTax.get(tax); vname=(v2&&v2.name)||bsRow.name; vaddr=(v2&&v2.addr)||bsRow.addr; source='map'; }
     }
     if(source!=='map'){
-      const v = vdByMfr.get(g.accMfr);
-      if(v && v.tax){
-        issues.push({item:g.item, code, level:'warn', reason:'對照檔沒有此藥的藥商，改以驗收廠商「'+g.accMfr+'」推測'+(opts.guess?'（已輸出）':'（未輸出）')});
-        if(opts.guess){ tax=v.tax; vname=v.name; vaddr=v.addr; source='guess'; }
-      } else {
-        issues.push({item:g.item, code, level:'err', reason:'找不到藥商（對照檔無此藥，驗收廠商「'+g.accMfr+'」也不在藥商資料）'});
-      }
+      issues.push({item:g.item, code, level:'err', reason:'對照檔找不到此藥的藥商，未輸出（請到「藥品基本資料」分頁補上藥廠名稱）'}); continue;
     }
-    if(source && (!tax || !vname || !vaddr)){
-      issues.push({item:g.item, code, level:'err', reason:'藥商資料不完整（統編／名稱／地址有空白）'});
-      if(!opts.partial) source='';
+    if(!tax || !vname || !vaddr){
+      issues.push({item:g.item, code, level:'err', reason:'藥商資料不完整（統編／名稱／地址有空白），未輸出'}); continue;
     }
-    if(!source && !opts.partial) continue;
     seenCode.add(code);
     rows.push({code, tax, name:vname, addr:vaddr, item:g.item, source});
   }
@@ -383,7 +365,7 @@ if(typeof document!=='undefined'){
     const msg = $('#resmsg'); msg.innerHTML='';
     try{
       last = buildReport({drugWb:wbs.drug, accWb:wbs.acc, refWb:wbs.ref},
-        {guess:$('#optGuess').checked, partial:$('#optPartial').checked, exclude:$('#optExclude').value.trim()});
+        {});
     }catch(e){
       $('#result').classList.remove('hide');
       $('#stats').innerHTML=''; $('#tab-prev').innerHTML=''; $('#tab-issue').innerHTML='';
@@ -398,7 +380,7 @@ if(typeof document!=='undefined'){
       stat(last.stats.out,'輸出列數')+stat(errs,'無法輸出／缺資料')+stat(warns,'需留意');
     $('#tab-prev').innerHTML = '<table><thead><tr><th>#</th><th>藥品代碼</th><th>統編</th><th>藥商名稱</th><th>藥商地址</th><th>品名</th><th>藥商來源</th></tr></thead><tbody>'+
       last.rows.map((r,i)=>'<tr><td>'+(i+1)+'</td><td class="mono">'+esc(r.code)+'</td><td class="mono">'+esc((r.tax||'').padStart(8,'0'))+'</td><td>'+esc(r.name)+'</td><td>'+esc(r.addr)+'</td><td>'+esc(r.item)+'</td><td>'+
-      (r.source==='guess'?'<span class="tag warn">驗收廠商推測</span>':r.source==='map'?'<span class="tag ok">對照檔</span>':'<span class="tag err">缺</span>')+'</td></tr>').join('')+'</tbody></table>';
+      '<span class="tag ok">對照檔</span>'+'</td></tr>').join('')+'</tbody></table>';
     $('#tab-issue').innerHTML = last.issues.length ? '<table><thead><tr><th>等級</th><th>品名</th><th>代碼</th><th>原因</th></tr></thead><tbody>'+
       last.issues.map(i=>'<tr><td><span class="tag '+i.level+'">'+(i.level==='err'?'未輸出':'留意')+'</span></td><td>'+esc(i.item)+'</td><td class="mono">'+esc(i.code)+'</td><td>'+esc(i.reason)+'</td></tr>').join('')+'</tbody></table>'
       : '<p style="padding:12px">沒有任何警告。</p>';
