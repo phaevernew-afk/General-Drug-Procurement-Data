@@ -144,7 +144,7 @@
       <summary>整理規則說明</summary>
       <ol>
         <li>以「驗收總表」本季有進貨的品項（名稱及規格）為基準，依序處理。</li>
-        <li>藥品代碼取自「藥品檔基本資料」；院內自訂碼（A0000000xx）不列入。同名稱有多個不同代碼的品項視為有疑問，不輸出。</li>
+        <li>藥品代碼取自「藥品檔基本資料」；院內自訂碼（A0000000xx）不列入。同名稱有多個代碼時，先看這筆進貨的廠商是否等於對照檔該代碼的藥廠，再看廠牌；仍無法唯一決定的才不輸出。藥商資料為空白或 0 的視為缺藥商。</li>
         <li>藥商：先依對照檔「藥品基本資料」分頁的藥廠名稱，到「藥商資料」分頁取得統編、全名、地址。沒有代碼或找不到藥商的品項不輸出，只列在警告清單；其中「對照檔缺藥商」的新藥可在頁面下方補進對照檔並下載更新後的檔案。</li>
         <li>同一藥品代碼只留第一筆。統編補零至 8 碼；藥商名稱、地址分別在左側補空白至 200、1200 bytes（內容靠右，Big5 計算，中文字 2 bytes）；換行為 CRLF。</li>
       </ol>
@@ -157,6 +157,8 @@
 /* ================= 核心邏輯（無 DOM 依賴，可在 Node 測試） ================= */
 const NAME_BYTES = 200, ADDR_BYTES = 1200;
 
+/* 空白或「0」（Excel 查不到資料時的結果）都視為沒有 */
+function zero(v){ return !v || /^0+$/.test(String(v).trim()); }
 function S(v){ if(v===null||v===undefined) return ''; return (typeof v==='number'? String(v): String(v)).trim(); }
 
 /* 在活頁簿中找出含指定表頭的分頁，回傳 {rows:[{欄名:值}], sheet} */
@@ -254,13 +256,13 @@ function buildReport(inputs, opts){
   for(const r of bsSheet.rows){
     if(!r['藥品名稱']) continue;
     if(!bsBy.has(r['藥品名稱'])) bsBy.set(r['藥品名稱'],[]);
-    bsBy.get(r['藥品名稱']).push({code:r['藥品代號'], mfr:r['藥廠名稱'], tax:r['藥商統編']||'', name:r['藥商全名']||'', addr:r['廠商地址']||''});
+    bsBy.get(r['藥品名稱']).push({code:r['藥品代號'], mfr:r['藥廠名稱'], tax:zero(r['藥商統編'])?'':r['藥商統編'], name:zero(r['藥商全名'])?'':r['藥商全名'], addr:zero(r['廠商地址'])?'':r['廠商地址']});
   }
   /* 藥商資料 */
   const vdByMfr = new Map(), vdByTax = new Map();
   for(const r of vdSheet.rows){
-    const tax = r['統一編號'] ? r['統一編號'].padStart(8,'0') : '';
-    const rec = {tax, name:r['廠商全名'], addr:r['廠商地址']};
+    const tax = zero(r['統一編號']) ? '' : r['統一編號'].padStart(8,'0');
+    const rec = {tax, name:zero(r['廠商全名'])?'':r['廠商全名'], addr:zero(r['廠商地址'])?'':r['廠商地址']};
     if(r['藥廠名稱'] && !vdByMfr.has(r['藥廠名稱'])) vdByMfr.set(r['藥廠名稱'],rec);
     if(tax && rec.name && !vdByTax.has(tax)) vdByTax.set(tax,rec);
   }
@@ -287,9 +289,15 @@ function buildReport(inputs, opts){
     if(!withCode.length){ issues.push({item:g.item, code:'', level:'err', reason:'藥品檔無藥品代碼'}); continue; }
     /* 院內自訂碼 A0000000xx 直接略過；同名稱有多個不同代碼視為有疑問，不輸出 */
     const codes = [...new Set(withCode.map(c=>c.code))];
-    if(codes.length>1){ issues.push({item:g.item, code:codes.join(' / '), level:'err', reason:'同名稱有多個不同代碼，無法確定，未輸出'}); continue; }
     const bsRows = bsBy.get(g.item)||[];
-    const code = codes[0];
+    let code = codes[0];
+    if(codes.length>1){
+      /* 同名稱多個代碼：先用「這筆進貨的廠商 = 對照檔該代碼的藥廠」判斷，再用廠牌判斷；仍無法唯一決定才不輸出 */
+      let hit = codes.filter(c=>bsRows.some(b=>b.code===c && b.mfr===g.accMfr));
+      if(hit.length!==1) hit = codes.filter(c=>withCode.some(d=>d.code===c && g.brand && d.brand===g.brand));
+      if(hit.length!==1){ issues.push({item:g.item, code:codes.join(' / '), level:'err', reason:'同名稱有多個不同代碼，且無法由進貨廠商或廠牌判斷，未輸出'}); continue; }
+      code = hit[0];
+    }
     if(/^A0000000\d{2}$/.test(code)) continue;
     if(code.length!==10) issues.push({item:g.item, code, level:'warn', reason:'藥品代碼不是 10 碼（'+code.length+' 碼）'});
     if(seenCode.has(code)){ issues.push({item:g.item, code, level:'warn', reason:'藥品代碼重複，已略過後面這筆'}); continue; }
