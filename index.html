@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>一般藥品採購資料申報 · CSV 產生器</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#ffffff; --text:#1d2430; --sub:#5b6575; --line:#d9dee6;
+    --brand:#1f6feb; --brand-t:#ffffff; --ok:#1a7f37; --warn:#9a6700; --err:#cf222e;
+    --okbg:#dafbe1; --warnbg:#fff8c5; --errbg:#ffebe9; --th:#eef1f5;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#0f141a; --card:#171d25; --text:#e6e9ee; --sub:#9aa5b4; --line:#2b3441;
+      --brand:#4c8dff; --brand-t:#0b1220; --ok:#56d364; --warn:#e3b341; --err:#ff7b72;
+      --okbg:#12261a; --warnbg:#2b2410; --errbg:#2f1517; --th:#1e2630;
+    }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC","Microsoft JhengHei",sans-serif;
+    line-height:1.55}
+  .wrap{max-width:1100px;margin:0 auto;padding:24px 16px 64px}
+  h1{font-size:1.45rem;margin:0 0 4px}
+  .sub{color:var(--sub);margin:0 0 20px;font-size:.95rem}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px}
+  .card h2{font-size:1.05rem;margin:0 0 10px}
+  .drops{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px}
+  .drop{border:2px dashed var(--line);border-radius:10px;padding:14px;text-align:center;cursor:pointer;
+    transition:border-color .15s, background .15s;min-height:128px;display:flex;flex-direction:column;
+    justify-content:center;gap:4px}
+  .drop:hover,.drop.over{border-color:var(--brand);background:color-mix(in srgb,var(--brand) 6%,transparent)}
+  .drop.done{border-style:solid;border-color:var(--ok)}
+  .drop .t{font-weight:600}
+  .drop .d{font-size:.85rem;color:var(--sub)}
+  .drop .f{font-size:.85rem;color:var(--ok);word-break:break-all}
+  .drop input{display:none}
+  .opts{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px 16px;font-size:.92rem}
+  .opts label{display:flex;gap:8px;align-items:flex-start}
+  .opts input[type=text]{width:100%;padding:6px 8px;border:1px solid var(--line);border-radius:6px;
+    background:var(--bg);color:var(--text);font:inherit}
+  .field{display:flex;flex-direction:column;gap:4px}
+  .field span{color:var(--sub);font-size:.85rem}
+  button{font:inherit;border-radius:8px;border:1px solid var(--line);padding:8px 14px;background:var(--card);
+    color:var(--text);cursor:pointer}
+  button.primary{background:var(--brand);color:var(--brand-t);border-color:var(--brand);font-weight:600}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  .bar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:12px}
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+  .stat{background:var(--th);border-radius:8px;padding:10px 12px}
+  .stat b{display:block;font-size:1.3rem}
+  .stat span{font-size:.8rem;color:var(--sub)}
+  .tabs{display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap}
+  .tabs button.on{background:var(--brand);color:var(--brand-t);border-color:var(--brand)}
+  .tablebox{overflow-x:auto;max-height:480px;overflow-y:auto;border:1px solid var(--line);border-radius:8px}
+  table{border-collapse:collapse;width:100%;font-size:.85rem}
+  th,td{padding:6px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+  th{background:var(--th);position:sticky;top:0}
+  td.mono{font-family:ui-monospace,Menlo,Consolas,monospace;white-space:nowrap}
+  .tag{display:inline-block;padding:1px 8px;border-radius:99px;font-size:.78rem;white-space:nowrap}
+  .tag.warn{background:var(--warnbg);color:var(--warn)}
+  .tag.err{background:var(--errbg);color:var(--err)}
+  .tag.ok{background:var(--okbg);color:var(--ok)}
+  .msg{padding:10px 12px;border-radius:8px;margin-top:10px;font-size:.92rem}
+  .msg.err{background:var(--errbg);color:var(--err)}
+  .msg.ok{background:var(--okbg);color:var(--ok)}
+  details{font-size:.9rem;color:var(--sub)}
+  details summary{cursor:pointer}
+  details ol{margin:8px 0 0 0;padding-left:20px}
+  .hide{display:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>一般藥品採購資料申報 · CSV 產生器</h1>
+  <p class="sub">每季放入三個 Excel 檔，自動整理成上傳用的固定寬度 CSV（Big5）。所有處理都在你的瀏覽器內完成，檔案不會上傳到任何地方。</p>
+
+  <div class="card">
+    <h2>① 匯入檔案</h2>
+    <div class="drops">
+      <label class="drop" data-key="drug">
+        <input type="file" accept=".xls,.xlsx">
+        <span class="t">藥品檔基本資料</span>
+        <span class="d">欄位：藥品名稱、藥品代號、廠牌</span>
+        <span class="f"></span>
+      </label>
+      <label class="drop" data-key="acc">
+        <input type="file" accept=".xls,.xlsx">
+        <span class="t">藥物用品驗收總表（不分）</span>
+        <span class="d">欄位：廠商、進貨日期、名稱及規格…</span>
+        <span class="f"></span>
+      </label>
+      <label class="drop" data-key="ref">
+        <input type="file" accept=".xls,.xlsx">
+        <span class="t">申報對照檔（第三個 XLS）</span>
+        <span class="d">需含「藥品基本資料」與「藥商資料」分頁</span>
+        <span class="f"></span>
+      </label>
+    </div>
+    <div id="loadmsg"></div>
+  </div>
+
+  <div class="card">
+    <h2>② 選項</h2>
+    <div class="opts">
+      <label><input type="checkbox" id="optGuess"> <span>包含「用驗收廠商推測藥商」的品項（預設不含，因為進貨廠商不一定等於藥商）</span></label>
+      <label><input type="checkbox" id="optPartial"> <span>包含資料不全的列（缺藥商時欄位留白）</span></label>
+      <div class="field"><span>排除的藥品代碼（正規表示式，院內自訂碼）</span>
+        <input type="text" id="optExclude" value="^A0000000\d{2}$"></div>
+      <div class="field"><span>輸出檔名</span>
+        <input type="text" id="optName" value="申報.csv"></div>
+    </div>
+    <div class="bar"><button class="primary" id="btnRun" disabled>產生 CSV</button>
+      <span id="runhint" style="color:var(--sub);font-size:.88rem">請先放入三個檔案</span></div>
+  </div>
+
+  <div id="result" class="hide">
+    <div class="card">
+      <h2>③ 結果</h2>
+      <div class="stats" id="stats"></div>
+      <div class="bar">
+        <button class="primary" id="btnDl">下載 CSV</button>
+        <button id="btnDlIssue">下載排除／警告清單</button>
+      </div>
+      <div id="resmsg"></div>
+    </div>
+    <div class="card">
+      <div class="tabs">
+        <button class="on" data-tab="prev">輸出預覽</button>
+        <button data-tab="issue">排除／警告清單</button>
+      </div>
+      <div class="tablebox" id="tab-prev"></div>
+      <div class="tablebox hide" id="tab-issue"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <details>
+      <summary>整理規則說明</summary>
+      <ol>
+        <li>以「驗收總表」本季有進貨的品項（名稱及規格）為基準，依序處理。</li>
+        <li>藥品代碼取自「藥品檔基本資料」；同名稱有多個代碼時，用驗收總表的「廠牌」挑選，再不行才用對照檔的代碼。</li>
+        <li>沒有代碼，或符合排除規則（預設為院內自訂碼 A0000000xx）的品項不列入。</li>
+        <li>藥商：先依對照檔「藥品基本資料」分頁的藥廠名稱，到「藥商資料」分頁取得統編、全名、地址；找不到時才以驗收總表的廠商推測（預設不輸出，只列在警告）。</li>
+        <li>同一藥品代碼只留第一筆。統編補零至 8 碼；藥商名稱、地址分別在左側補空白至 200、1200 bytes（內容靠右，Big5 計算，中文字 2 bytes）；換行為 CRLF。</li>
+      </ol>
+    </details>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script>
+/* ================= 核心邏輯（無 DOM 依賴，可在 Node 測試） ================= */
+const NAME_BYTES = 200, ADDR_BYTES = 1200;
+
+function S(v){ if(v===null||v===undefined) return ''; return (typeof v==='number'? String(v): String(v)).trim(); }
+
+/* 在活頁簿中找出含指定表頭的分頁，回傳 {rows:[{欄名:值}], sheet} */
+function locate(wb, required, optional){
+  optional = optional || [];
+  for(const sn of wb.SheetNames){
+    const ws = wb.Sheets[sn]; if(!ws) continue;
+    const arr = XLSX.utils.sheet_to_json(ws,{header:1,raw:true,defval:''});
+    for(let r=0; r<Math.min(arr.length,10); r++){
+      const heads = arr[r].map(S);
+      if(required.every(h=>heads.includes(h))){
+        const idx = {};
+        [...required,...optional].forEach(h=>{ const i=heads.indexOf(h); if(i>=0) idx[h]=i; });
+        const rows = [];
+        for(let i=r+1;i<arr.length;i++){
+          const o = {}; for(const h in idx) o[h] = S(arr[i][idx[h]]);
+          rows.push(o);
+        }
+        return {rows, sheet:sn};
+      }
+    }
+  }
+  return null;
+}
+
+/* ---- Big5 編碼（瀏覽器沒有 TextEncoder('big5')，用 TextDecoder 反查建表） ---- */
+let _b5 = null;
+function big5Map(){
+  if(_b5) return _b5;
+  const dec = new TextDecoder('big5'); const m = new Map();
+  const leads = []; for(let l=0xA1;l<=0xFE;l++) leads.push(l); for(let l=0x81;l<=0xA0;l++) leads.push(l);
+  for(const l of leads){
+    for(let t=0x40;t<=0xFE;t++){
+      if(t>0x7E && t<0xA1) continue;
+      const s = dec.decode(new Uint8Array([l,t]));
+      const cs = Array.from(s);
+      if(cs.length!==1 || cs[0]==='\uFFFD') continue;
+      if(!m.has(cs[0])) m.set(cs[0],[l,t]);
+    }
+  }
+  _b5 = m; return m;
+}
+/* 回傳 {bytes:[], bad:[不能編碼的字元]} */
+function big5Bytes(str){
+  const m = big5Map(); const out=[], bad=[];
+  for(const ch of str){
+    const cp = ch.codePointAt(0);
+    if(cp<0x80){ out.push(cp); continue; }
+    const b = m.get(ch);
+    if(b){ out.push(b[0],b[1]); } else { out.push(0x3F); bad.push(ch); }
+  }
+  return {bytes:out, bad};
+}
+/* 依 bytes 長度「左補」空白（內容靠右）／超長截斷 */
+function padBig5(str, n){
+  const m = big5Map(); const out=[]; let truncated=false, bad=[];
+  for(const ch of str){
+    const cp = ch.codePointAt(0); let b;
+    if(cp<0x80) b=[cp]; else { const x=m.get(ch); if(x) b=x; else { b=[0x3F]; bad.push(ch);} }
+    if(out.length + b.length > n){ truncated=true; break; }
+    out.push(...b);
+  }
+  const pad = new Array(n-out.length).fill(0x20);   /* 靠右對齊：空白補在左邊 */
+  return {bytes:pad.concat(out), truncated, bad};
+}
+
+/* 含逗號或雙引號的欄位依 CSV 慣例加雙引號（與 Excel 另存 CSV 相同） */
+function csvField(bytes){
+  if(!bytes.some(b=>b===0x2C||b===0x22)) return bytes;
+  const o=[0x22]; for(const b of bytes){ if(b===0x22) o.push(0x22); o.push(b); } o.push(0x22); return o;
+}
+function rocYM(d){ const m = /^(\d{2,3})\/(\d{1,2})\/(\d{1,2})$/.exec(d); return m? {y:+m[1],mo:+m[2]} : null; }
+
+/* inputs: {drugWb, accWb, refWb}  opts:{guess, partial, exclude} */
+function buildReport(inputs, opts){
+  const issues = []; // {item, code, reason, level, detail}
+  const drugSheet = locate(inputs.drugWb, ['藥品名稱','藥品代號'], ['廠牌']);
+  if(!drugSheet) throw new Error('「藥品檔基本資料」找不到含「藥品名稱、藥品代號」表頭的分頁');
+  const accSheet = locate(inputs.accWb, ['廠商','進貨日期','名稱及規格'], ['廠牌']);
+  if(!accSheet) throw new Error('「驗收總表」找不到含「廠商、進貨日期、名稱及規格」表頭的分頁');
+  const bsSheet = locate(inputs.refWb, ['藥品名稱','藥品代號','藥廠名稱'], ['藥商統編','藥商全名','廠商地址']);
+  if(!bsSheet) throw new Error('「對照檔」找不到「藥品基本資料」分頁（需有藥品名稱、藥品代號、藥廠名稱）');
+  const vdSheet = locate(inputs.refWb, ['藥廠名稱','統一編號','廠商全名','廠商地址']);
+  if(!vdSheet) throw new Error('「對照檔」找不到「藥商資料」分頁（需有藥廠名稱、統一編號、廠商全名、廠商地址）');
+
+  /* 藥品檔：名稱 → [{code,brand}] */
+  const drugBy = new Map();
+  for(const r of drugSheet.rows){
+    if(!r['藥品名稱']) continue;
+    if(!drugBy.has(r['藥品名稱'])) drugBy.set(r['藥品名稱'],[]);
+    drugBy.get(r['藥品名稱']).push({code:r['藥品代號'], brand:r['廠牌']||''});
+  }
+  /* 對照檔藥品基本資料：名稱 → [{code,mfr,tax,name,addr}] */
+  const bsBy = new Map();
+  for(const r of bsSheet.rows){
+    if(!r['藥品名稱']) continue;
+    if(!bsBy.has(r['藥品名稱'])) bsBy.set(r['藥品名稱'],[]);
+    bsBy.get(r['藥品名稱']).push({code:r['藥品代號'], mfr:r['藥廠名稱'], tax:r['藥商統編']||'', name:r['藥商全名']||'', addr:r['廠商地址']||''});
+  }
+  /* 藥商資料 */
+  const vdByMfr = new Map(), vdByTax = new Map();
+  for(const r of vdSheet.rows){
+    const tax = r['統一編號'] ? r['統一編號'].padStart(8,'0') : '';
+    const rec = {tax, name:r['廠商全名'], addr:r['廠商地址']};
+    if(r['藥廠名稱'] && !vdByMfr.has(r['藥廠名稱'])) vdByMfr.set(r['藥廠名稱'],rec);
+    if(tax && rec.name && !vdByTax.has(tax)) vdByTax.set(tax,rec);
+  }
+
+  /* 驗收總表：依出現順序取 (名稱, 廠牌) 不重複組合 */
+  const accRows = accSheet.rows.filter(r=>r['進貨日期'] && r['名稱及規格']);
+  const groups = new Map();
+  let minYM = null;
+  for(const r of accRows){
+    const ym = rocYM(r['進貨日期']);
+    if(ym && (!minYM || ym.y*100+ym.mo < minYM.y*100+minYM.mo)) minYM = ym;
+    const key = r['名稱及規格']+'\u0001'+(r['廠牌']||'');
+    if(!groups.has(key)) groups.set(key,{item:r['名稱及規格'], brand:r['廠牌']||'', accMfr:r['廠商'].replace(/^[A-Za-z0-9]+-/,'')});
+  }
+
+  const exRe = opts.exclude ? new RegExp(opts.exclude) : null;
+  const seenCode = new Set(); const rows = [];
+  const stats = {accItems:new Set(accRows.map(r=>r['名稱及規格'])).size, accRows:accRows.length};
+  const warnedNames = new Set();
+
+  for(const g of groups.values()){
+    const cands = (drugBy.get(g.item)||[]);
+    if(!cands.length){ issues.push({item:g.item, code:'', level:'err', reason:'藥品檔找不到此品項'}); continue; }
+    const withCode = cands.filter(c=>c.code);
+    if(!withCode.length){ issues.push({item:g.item, code:'', level:'err', reason:'藥品檔無藥品代碼'}); continue; }
+    /* 挑代碼 */
+    const bsRows = bsBy.get(g.item)||[];
+    let pick = null;
+    if(withCode.length>1){
+      if(g.brand) pick = withCode.find(c=>c.brand===g.brand);
+      if(!pick) pick = withCode.find(c=>bsRows.some(b=>b.code===c.code));
+      if(!pick){ pick = withCode[0]; issues.push({item:g.item, code:pick.code, level:'warn', reason:'同名稱有多個代碼，無法判斷，暫用第一個'}); }
+    } else pick = withCode[0];
+    const code = pick.code;
+    if(exRe && exRe.test(code)){ issues.push({item:g.item, code, level:'warn', reason:'符合排除規則（院內自訂碼），未列入'}); continue; }
+    if(code.length!==10) issues.push({item:g.item, code, level:'warn', reason:'藥品代碼不是 10 碼（'+code.length+' 碼）'});
+    if(seenCode.has(code)){ issues.push({item:g.item, code, level:'warn', reason:'藥品代碼重複，已略過後面這筆'}); continue; }
+
+    /* 找藥商 */
+    let tax='', vname='', vaddr='', source='';
+    const bsRow = bsRows.find(b=>b.code===code) || bsRows.find(b=>b.mfr) || null;
+    if(bsRow){
+      const v = vdByMfr.get(bsRow.mfr);
+      if(v && v.tax){ tax=v.tax; vname=v.name; vaddr=v.addr; source='map'; }
+      else if(bsRow.tax){ tax=bsRow.tax.padStart(8,'0'); const v2=vdByTax.get(tax); vname=(v2&&v2.name)||bsRow.name; vaddr=(v2&&v2.addr)||bsRow.addr; source='map'; }
+    }
+    if(source!=='map'){
+      const v = vdByMfr.get(g.accMfr);
+      if(v && v.tax){
+        issues.push({item:g.item, code, level:'warn', reason:'對照檔沒有此藥的藥商，改以驗收廠商「'+g.accMfr+'」推測'+(opts.guess?'（已輸出）':'（未輸出）')});
+        if(opts.guess){ tax=v.tax; vname=v.name; vaddr=v.addr; source='guess'; }
+      } else {
+        issues.push({item:g.item, code, level:'err', reason:'找不到藥商（對照檔無此藥，驗收廠商「'+g.accMfr+'」也不在藥商資料）'});
+      }
+    }
+    if(source && (!tax || !vname || !vaddr)){
+      issues.push({item:g.item, code, level:'err', reason:'藥商資料不完整（統編／名稱／地址有空白）'});
+      if(!opts.partial) source='';
+    }
+    if(!source && !opts.partial) continue;
+    seenCode.add(code);
+    rows.push({code, tax, name:vname, addr:vaddr, item:g.item, source});
+  }
+
+  /* 組 CSV bytes */
+  const chunks = []; const enc = (arr)=>chunks.push(Uint8Array.from(arr));
+  const comma=[0x2C], crlf=[0x0D,0x0A];
+  for(const r of rows){
+    const p1 = padBig5(r.name, NAME_BYTES), p2 = padBig5(r.addr, ADDR_BYTES);
+    if(p1.truncated) issues.push({item:r.item, code:r.code, level:'warn', reason:'藥商名稱超過 200 bytes，已截斷'});
+    if(p2.truncated) issues.push({item:r.item, code:r.code, level:'warn', reason:'藥商地址超過 1200 bytes，已截斷'});
+    const bad = [...p1.bad, ...p2.bad];
+    if(bad.length) issues.push({item:r.item, code:r.code, level:'warn', reason:'Big5 無法編碼的字元已改成 ?：'+[...new Set(bad)].join('')});
+    enc(big5Bytes(r.code).bytes); enc(comma);
+    enc(big5Bytes((r.tax||'').padStart(8,'0').slice(0,8)).bytes); enc(comma);
+    enc(csvField(p1.bytes)); enc(comma); enc(csvField(p2.bytes)); enc(crlf);
+  }
+  let total=0; chunks.forEach(c=>total+=c.length);
+  const bytes = new Uint8Array(total); let o=0; chunks.forEach(c=>{bytes.set(c,o); o+=c.length;});
+
+  const defaultName = minYM ? String(minYM.y)+String(minYM.mo).padStart(2,'0')+'.csv' : '申報.csv';
+  return {rows, issues, bytes, defaultName, stats:{...stats, groups:groups.size, out:rows.length}};
+}
+
+if(typeof module!=='undefined') module.exports = {buildReport, locate, big5Map};
+
+/* ================= 介面 ================= */
+if(typeof document!=='undefined'){
+(function(){
+  const $ = s=>document.querySelector(s);
+  const wbs = {drug:null, acc:null, ref:null};
+  let last = null;
+
+  document.querySelectorAll('.drop').forEach(box=>{
+    const key = box.dataset.key, inp = box.querySelector('input');
+    inp.addEventListener('change', ()=>{ if(inp.files[0]) load(key, inp.files[0], box); });
+    ['dragover','dragenter'].forEach(e=>box.addEventListener(e, ev=>{ev.preventDefault(); box.classList.add('over');}));
+    ['dragleave','drop'].forEach(e=>box.addEventListener(e, ev=>{ev.preventDefault(); box.classList.remove('over');}));
+    box.addEventListener('drop', ev=>{ const f = ev.dataTransfer.files[0]; if(f) load(key, f, box); });
+  });
+
+  function showMsg(el, cls, text){ el.innerHTML = text? '<div class="msg '+cls+'"></div>':''; if(text) el.firstChild.textContent = text; }
+
+  async function load(key, file, box){
+    try{
+      const buf = await file.arrayBuffer();
+      wbs[key] = XLSX.read(buf,{type:'array'});
+      box.classList.add('done'); box.querySelector('.f').textContent = '✓ '+file.name;
+      showMsg($('#loadmsg'),'ok','');
+    }catch(e){
+      wbs[key]=null; box.classList.remove('done'); box.querySelector('.f').textContent='';
+      showMsg($('#loadmsg'),'err','無法讀取「'+file.name+'」：'+e.message);
+    }
+    const ready = wbs.drug && wbs.acc && wbs.ref;
+    $('#btnRun').disabled = !ready;
+    $('#runhint').textContent = ready ? '' : '請先放入三個檔案';
+  }
+
+  function esc(s){ return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+  function stat(n,l){ return '<div class="stat"><b>'+n+'</b><span>'+l+'</span></div>'; }
+
+  $('#btnRun').addEventListener('click', ()=>{
+    const msg = $('#resmsg'); msg.innerHTML='';
+    try{
+      last = buildReport({drugWb:wbs.drug, accWb:wbs.acc, refWb:wbs.ref},
+        {guess:$('#optGuess').checked, partial:$('#optPartial').checked, exclude:$('#optExclude').value.trim()});
+    }catch(e){
+      $('#result').classList.remove('hide');
+      $('#stats').innerHTML=''; $('#tab-prev').innerHTML=''; $('#tab-issue').innerHTML='';
+      showMsg(msg,'err',e.message); $('#btnDl').disabled=true; $('#btnDlIssue').disabled=true; return;
+    }
+    $('#btnDl').disabled=false; $('#btnDlIssue').disabled=false;
+    $('#result').classList.remove('hide');
+    const nm = $('#optName');
+    if(!nm.dataset.touched || nm.value==='申報.csv') nm.value = last.defaultName;
+    const errs = last.issues.filter(i=>i.level==='err').length, warns = last.issues.filter(i=>i.level==='warn').length;
+    $('#stats').innerHTML = stat(last.stats.accRows,'驗收明細筆數')+stat(last.stats.accItems,'驗收不重複品項')+
+      stat(last.stats.out,'輸出列數')+stat(errs,'無法輸出／缺資料')+stat(warns,'需留意');
+    $('#tab-prev').innerHTML = '<table><thead><tr><th>#</th><th>藥品代碼</th><th>統編</th><th>藥商名稱</th><th>藥商地址</th><th>品名</th><th>藥商來源</th></tr></thead><tbody>'+
+      last.rows.map((r,i)=>'<tr><td>'+(i+1)+'</td><td class="mono">'+esc(r.code)+'</td><td class="mono">'+esc((r.tax||'').padStart(8,'0'))+'</td><td>'+esc(r.name)+'</td><td>'+esc(r.addr)+'</td><td>'+esc(r.item)+'</td><td>'+
+      (r.source==='guess'?'<span class="tag warn">驗收廠商推測</span>':r.source==='map'?'<span class="tag ok">對照檔</span>':'<span class="tag err">缺</span>')+'</td></tr>').join('')+'</tbody></table>';
+    $('#tab-issue').innerHTML = last.issues.length ? '<table><thead><tr><th>等級</th><th>品名</th><th>代碼</th><th>原因</th></tr></thead><tbody>'+
+      last.issues.map(i=>'<tr><td><span class="tag '+i.level+'">'+(i.level==='err'?'未輸出':'留意')+'</span></td><td>'+esc(i.item)+'</td><td class="mono">'+esc(i.code)+'</td><td>'+esc(i.reason)+'</td></tr>').join('')+'</tbody></table>'
+      : '<p style="padding:12px">沒有任何警告。</p>';
+    if(errs) showMsg(msg,'err','有 '+errs+' 個品項因缺資料沒有輸出。多半是新藥：請到對照檔的「藥品基本資料」分頁補上該藥的藥廠名稱，存檔後重新匯入。');
+    else showMsg(msg,'ok','全部品項都已處理。');
+    $('#result').scrollIntoView({behavior:'smooth'});
+  });
+
+  $('#optName').addEventListener('input', e=>{ e.target.dataset.touched='1'; });
+  $('.tabs').addEventListener('click', e=>{
+    const t = e.target.dataset.tab; if(!t) return;
+    document.querySelectorAll('.tabs button').forEach(b=>b.classList.toggle('on', b===e.target));
+    $('#tab-prev').classList.toggle('hide', t!=='prev'); $('#tab-issue').classList.toggle('hide', t!=='issue');
+  });
+
+  function download(blob, name){
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
+    document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href), 2000);
+  }
+  $('#btnDl').addEventListener('click', ()=>{
+    if(!last) return; let n = $('#optName').value.trim() || last.defaultName; if(!/\.csv$/i.test(n)) n+='.csv';
+    download(new Blob([last.bytes],{type:'text/csv'}), n);
+  });
+  $('#btnDlIssue').addEventListener('click', ()=>{
+    if(!last) return;
+    const q = s=>'"'+String(s).replace(/"/g,'""')+'"';
+    const csv = '\uFEFF等級,品名,代碼,原因\r\n'+last.issues.map(i=>[i.level==='err'?'未輸出':'留意',i.item,i.code,i.reason].map(q).join(',')).join('\r\n');
+    download(new Blob([csv],{type:'text/csv;charset=utf-8'}), '警告清單.csv');
+  });
+})();
+}
+</script>
+</body>
+</html>
